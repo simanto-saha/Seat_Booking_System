@@ -1,38 +1,42 @@
 ## System Architecture
 
 ```text
-Frontend (React / Django Templates)
-                │
-                ▼
-        WebSocket (ASGI)
-                │
-                ▼
-        Django Channels
-                │
-                ▼
-Redis (Booking Lock)
-                │
-                ▼
-    PostgreSQL Database
-      (Final Booking Data)
+      React Frontend
+             │
+             ▼
+      WebSocket (ASGI)
+             │
+             ▼
+      Django Channels
+             │
+             ▼
+     Redis (Seat Lock)
+             │
+             ▼
+      Django Backend
+             │
+             ▼
+     PostgreSQL Database
+     (Final Booking Data)
 ```
 
-### Flow
+### Booking Flow
 
-1. User selects a seat from the Frontend.
-2. The request is sent through WebSocket (ASGI).
-3. Django Channels handles real-time communication.
-4. Redis temporarily locks the selected seat and manages shared state.
-5. Once booking is confirmed, the data is saved in the PostgreSQL database.
-6. Booking updates are instantly broadcast to all connected users.
+1. User selects a seat from the React frontend.
+2. A WebSocket connection sends the request in real time.
+3. Django Channels processes the incoming event.
+4. Redis temporarily locks the seat to prevent double booking.
+5. Django backend validates the booking request.
+6. The booking is stored in PostgreSQL.
+7. Updated seat status is broadcast to all connected users instantly.
 
 ### Tech Stack
 
 - **Frontend:** React.js
-- **Backend:** Django
-- **Real-time Communication:** Django Channels
+- **Backend:** Django & Django REST Framework
+- **Real-Time Communication:** Django Channels
 - **Protocol:** WebSocket (ASGI)
-- **Cache & Locking:** Redis
+- **Cache & Seat Locking:** Redis
 - **Database:** PostgreSQL
+- **Authentication:** JWT Authentication
 - **Task Queue (Optional):** Celery
-```
