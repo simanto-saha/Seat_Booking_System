@@ -10,7 +10,7 @@ Frontend (React / Django Templates)
         Django Channels
                 │
                 ▼
-Redis (Shared State / Booking Lock)
+Redis (Booking Lock)
                 │
                 ▼
     PostgreSQL Database
