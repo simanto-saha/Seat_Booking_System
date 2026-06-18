@@ -72,9 +72,19 @@ def create_account(request):
     is_valid, error_message = is_strong_password(password)
     if not is_valid:
         return Response({'error': error_message}, status=400)
+    
+    from django.core.cache import cache
+    
+    # OTP verified কিনা check
+    if not cache.get(f"reg_otp_verified_{email}"):
+        return Response({'error': 'Email not verified. Please verify OTP first.'}, status=403)
 
     user = User.objects.create_user(username=nid, password=password, email=email)
     UserCreate.objects.create(user=user, full_name=full_name, nid=nid, phone_number=phone_number)
+    
+    # verified flag মুছো
+    cache.delete(f"reg_otp_verified_{email}")
+
 
     return Response({'message': 'Account created successfully.'}, status=201)
 
@@ -120,56 +130,84 @@ def generate_otp(request):
 
 
 @api_view(['POST'])
-def verify_otp(request):
+def send_registration_otp(request):
+    email = request.data.get('email')
+
+    if not email:
+        return Response({'error': 'Email is required.'}, status=400)
+
+    # Email already registered?
+    if User.objects.filter(email=email).exists():
+        return Response({'error': 'Email already exists.'}, status=400)
+
+    # Temp user দিয়ে OTP store করবো না, cache ব্যবহার করবো
+    from django.core.cache import cache
+
+    cache_key = f"reg_otp_{email}"
+    
+    # 1 মিনিট এর মধ্যে আবার চাইলে block
+    if cache.get(f"reg_otp_cooldown_{email}"):
+        return Response({'error': 'Please wait before requesting another OTP.'}, status=429)
+
+    otp_code = str(random.randint(100000, 999999))
+    
+    # 5 মিনিট OTP রাখো, 1 মিনিট cooldown
+    cache.set(cache_key, otp_code, timeout=300)
+    cache.set(f"reg_otp_cooldown_{email}", True, timeout=60)
+
+    try:
+        send_mail(
+            subject='Your OTP Code',
+            message=f'Your OTP code is: {otp_code}. This code is valid for 5 minutes.',
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[email],
+            fail_silently=False,
+        )
+    except Exception:
+        cache.delete(cache_key)
+        return Response({'error': 'Failed to send OTP email.'}, status=500)
+
+    return Response({'message': 'OTP sent to your email successfully.'}, status=200)
+
+
+@api_view(['POST'])
+def verify_registration_otp(request):
     email = request.data.get('email')
     otp_code = request.data.get('otp_code')
 
     if not email or not otp_code:
-        return Response({'error': 'Email and OTP code are required.'}, status=400)
+        return Response({'error': 'Email and OTP are required.'}, status=400)
 
-    try:
-        user = User.objects.get(email=email)
-    except User.DoesNotExist:
-        return Response({'error': 'No account found with this email.'}, status=404)
+    from django.core.cache import cache
+    
+    saved_otp = cache.get(f"reg_otp_{email}")
+    
+    if not saved_otp:
+        return Response({'error': 'OTP expired or not found.'}, status=400)
+    
+    if saved_otp != otp_code:
+        return Response({'error': 'Invalid OTP code.'}, status=400)
 
-    otp_candidates = OTP_generate.objects.filter(
-        user=user,
-        is_verified=False,
-        created_at__gte=timezone.now() - timedelta(minutes=5)
-    ).order_by('-created_at')
-
-    matched_otp = None
-    for otp_obj in otp_candidates:
-        if otp_obj.check_otp(otp_code):
-            matched_otp = otp_obj
-            break
-
-    if not matched_otp:
-        return Response({'error': 'Invalid or expired OTP code.'}, status=400)
-
-    matched_otp.is_verified = True
-    matched_otp.save()
+    # OTP সঠিক — delete করো এবং verified flag রাখো
+    cache.delete(f"reg_otp_{email}")
+    cache.set(f"reg_otp_verified_{email}", True, timeout=600)  # 10 মিনিট সময় account বানাতে
 
     return Response({'message': 'OTP verified successfully.'}, status=200)
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
 def home(request):
     user = request.user
 
+    if not user.is_authenticated:
+        return Response({'role': 'guest', 'message': 'Welcome, Guest!'})
+
     if user.is_superuser:
-        return Response({
-            'role': 'admin',
-            'message': f'Welcome, {user.username}!',
-        })
+        return Response({'role': 'admin', 'message': f'Welcome, {user.username}!'})
 
     try:
         profile = UserCreate.objects.get(user=user)
-        return Response({
-            'role': 'user',
-            'message': f'Welcome, {profile.full_name}!',
-        })
+        return Response({'role': 'user', 'message': f'Welcome, {profile.full_name}!'})
     except UserCreate.DoesNotExist:
         return Response({'error': 'Profile not found'}, status=404)
 
