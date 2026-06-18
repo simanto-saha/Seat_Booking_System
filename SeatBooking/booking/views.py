@@ -10,8 +10,17 @@ from django.conf import settings
 from django.utils import timezone
 from datetime import timedelta
 from django.contrib.auth import authenticate, login, logout
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 
-from .models import UserCreate, OTP_generate
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+from django.db import transaction
+import uuid
+
+from .models import UserCreate, OTP_generate, SeatBooking, Seat, Payment, BookedSeat
 
 
 def is_strong_password(password):
@@ -31,168 +40,360 @@ def is_strong_password(password):
     return True, None
 
 
+@api_view(['POST'])
 def create_account(request):
-    if request.method == 'POST':
-        full_name = request.POST.get('full_name')
-        email = request.POST.get('email')
-        nid = request.POST.get('nid')
-        phone_number = request.POST.get('phone_number')
-        password = request.POST.get('password')
-        confirm_password = request.POST.get('confirm_password')
+    full_name = request.data.get('full_name')
+    email = request.data.get('email')
+    nid = request.data.get('nid')
+    phone_number = request.data.get('phone_number')
+    password = request.data.get('password')
+    confirm_password = request.data.get('confirm_password')
 
-        
-        if not full_name or not email or not nid or not phone_number or not password or not confirm_password:
-            return JsonResponse({'error': 'All fields are required.'}, status=400)
+    if not all([full_name, email, nid, phone_number, password, confirm_password]):
+        return Response({'error': 'All fields are required.'}, status=400)
 
-        # Email validation
-        try:
-            validate_email(email)
-        except ValidationError:
-            return JsonResponse({'error': 'Invalid email address.'}, status=400)
+    try:
+        validate_email(email)
+    except ValidationError:
+        return Response({'error': 'Invalid email address.'}, status=400)
 
-        if User.objects.filter(email=email).exists():
-            return JsonResponse({'error': 'Email already exists.'}, status=400)
+    if User.objects.filter(email=email).exists():
+        return Response({'error': 'Email already exists.'}, status=400)
 
-        if UserCreate.objects.filter(nid=nid).exists():
-            return JsonResponse({'error': 'NID already exists.'}, status=400)
+    if UserCreate.objects.filter(nid=nid).exists():
+        return Response({'error': 'NID already exists.'}, status=400)
 
-        if UserCreate.objects.filter(phone_number=phone_number).exists():
-            return JsonResponse({'error': 'Phone number already exists.'}, status=400)
+    if UserCreate.objects.filter(phone_number=phone_number).exists():
+        return Response({'error': 'Phone number already exists.'}, status=400)
 
-        if password != confirm_password:
-            return JsonResponse({'error': 'Passwords do not match.'}, status=400)
+    if password != confirm_password:
+        return Response({'error': 'Passwords do not match.'}, status=400)
 
-        # Password strength check
-        is_valid, error_message = is_strong_password(password)
-        if not is_valid:
-            return JsonResponse({'error': error_message}, status=400)
+    is_valid, error_message = is_strong_password(password)
+    if not is_valid:
+        return Response({'error': error_message}, status=400)
 
-        user = User.objects.create_user(username=nid, password=password, email=email)
+    user = User.objects.create_user(username=nid, password=password, email=email)
+    UserCreate.objects.create(user=user, full_name=full_name, nid=nid, phone_number=phone_number)
 
-        UserCreate.objects.create(
-            user=user,
-            full_name=full_name,
-            nid=nid,
-            phone_number=phone_number
-        )
-
-        return JsonResponse({'message': 'Account created successfully.'}, status=201)
-
-    return JsonResponse({'error': 'Invalid request method.'}, status=405)
+    return Response({'message': 'Account created successfully.'}, status=201)
 
 
+@api_view(['POST'])
 def generate_otp(request):
-    if request.method == 'POST':
-        email = request.POST.get('email')
+    email = request.data.get('email')
 
-        if not email:
-            return JsonResponse({'error': 'Email is required.'}, status=400)
+    if not email:
+        return Response({'error': 'Email is required.'}, status=400)
 
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return JsonResponse({'error': 'No account found with this email.'}, status=404)
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return Response({'error': 'No account found with this email.'}, status=404)
 
-        
-        recent_otp = OTP_generate.objects.filter(
-            user=user,
-            created_at__gte=timezone.now() - timedelta(minutes=1)
-        ).first()
+    recent_otp = OTP_generate.objects.filter(
+        user=user,
+        created_at__gte=timezone.now() - timedelta(minutes=1)
+    ).first()
 
-        if recent_otp:
-            return JsonResponse({'error': 'Please wait before requesting another OTP.'}, status=429)
+    if recent_otp:
+        return Response({'error': 'Please wait before requesting another OTP.'}, status=429)
 
-        
-        otp_code = str(random.randint(100000, 999999))
+    otp_code = str(random.randint(100000, 999999))
+    otp_obj = OTP_generate(user=user)
+    otp_obj.set_otp(otp_code)
+    otp_obj.save()
 
-        otp_obj = OTP_generate(user=user)
-        otp_obj.set_otp(otp_code)  
-        otp_obj.save()
+    try:
+        send_mail(
+            subject='Your OTP Code',
+            message=f'Your OTP code is: {otp_code}. This code is valid for 5 minutes.',
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[email],
+            fail_silently=False,
+        )
+    except Exception:
+        otp_obj.delete()
+        return Response({'error': 'Failed to send OTP email.'}, status=500)
 
-        # Email sent
-        try:
-            send_mail(
-                subject='Your OTP Code',
-                message=f'Your OTP code is: {otp_code}. This code is valid for 5 minutes.',
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[email],
-                fail_silently=False,
-            )
-        except Exception:
-            otp_obj.delete()  
-            return JsonResponse({'error': 'Failed to send OTP email.'}, status=500)
-
-        return JsonResponse({'message': 'OTP sent to your email successfully.'}, status=200)
-
-    return JsonResponse({'error': 'Invalid request method.'}, status=405)
+    return Response({'message': 'OTP sent to your email successfully.'}, status=200)
 
 
+@api_view(['POST'])
 def verify_otp(request):
-    if request.method == 'POST':
-        email = request.POST.get('email')
-        otp_code = request.POST.get('otp_code')
+    email = request.data.get('email')
+    otp_code = request.data.get('otp_code')
 
-        if not email or not otp_code:
-            return JsonResponse({'error': 'Email and OTP code are required.'}, status=400)
+    if not email or not otp_code:
+        return Response({'error': 'Email and OTP code are required.'}, status=400)
 
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return JsonResponse({'error': 'No account found with this email.'}, status=404)
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return Response({'error': 'No account found with this email.'}, status=404)
 
-        
-        otp_candidates = OTP_generate.objects.filter(
-            user=user,
-            is_verified=False,
-            created_at__gte=timezone.now() - timedelta(minutes=5)
-        ).order_by('-created_at')
+    otp_candidates = OTP_generate.objects.filter(
+        user=user,
+        is_verified=False,
+        created_at__gte=timezone.now() - timedelta(minutes=5)
+    ).order_by('-created_at')
 
-        matched_otp = None
-        for otp_obj in otp_candidates:
-            if otp_obj.check_otp(otp_code):
-                matched_otp = otp_obj
-                break
+    matched_otp = None
+    for otp_obj in otp_candidates:
+        if otp_obj.check_otp(otp_code):
+            matched_otp = otp_obj
+            break
 
-        if not matched_otp:
-            return JsonResponse({'error': 'Invalid or expired OTP code.'}, status=400)
+    if not matched_otp:
+        return Response({'error': 'Invalid or expired OTP code.'}, status=400)
 
-        matched_otp.is_verified = True
-        matched_otp.save()
+    matched_otp.is_verified = True
+    matched_otp.save()
 
-        return JsonResponse({'message': 'OTP verified successfully.'}, status=200)
-
-    return JsonResponse({'error': 'Invalid request method.'}, status=405)
+    return Response({'message': 'OTP verified successfully.'}, status=200)
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def home(request):
     user = request.user
-    if user.is_authenticated:
-        user_name = UserCreate.objects.get(user=user).full_name
 
-        return JsonResponse({'message': f'Welcome, {user_name}!'}, status=200)
-    
-    return JsonResponse({'message': 'Welcome, Guest! Please log in.'}, status=200)
+    if user.is_superuser:
+        return Response({
+            'role': 'admin',
+            'message': f'Welcome, {user.username}!',
+        })
+
+    try:
+        profile = UserCreate.objects.get(user=user)
+        return Response({
+            'role': 'user',
+            'message': f'Welcome, {profile.full_name}!',
+        })
+    except UserCreate.DoesNotExist:
+        return Response({'error': 'Profile not found'}, status=404)
 
 
+@api_view(['POST'])
 def account_login(request):
-    nid = request.POST.get('nid')
-    password = request.POST.get('password')
+    identifier = request.data.get('identifier')  # email or nid
+    password = request.data.get('password')
 
-    user = authenticate(request, username=nid, password=password)
-    if user is not None:
-        login(request, user)
-        return JsonResponse({'message': 'Login successful.'}, status=200)
+    if not identifier or not password:
+        return Response({'error': 'identifier and password required'}, status=400)
+
+    # Superuser login - email diye
+    if '@' in identifier:
+        try:
+            user = User.objects.get(email=identifier)
+            username = user.username
+        except User.DoesNotExist:
+            return Response({'error': 'Invalid credentials'}, status=400)
     else:
-        return JsonResponse({'error': 'Invalid NID or password.'}, status=400)
+        # Normal user  - nid diye
+        try:
+            profile = UserCreate.objects.get(nid=identifier)
+            username = profile.user.username
+        except UserCreate.DoesNotExist:
+            return Response({'error': 'Invalid credentials'}, status=400)
+
+    user = authenticate(request, username=username, password=password)
+    if user is None:
+        return Response({'error': 'Invalid credentials'}, status=400)
+
+    login(request, user)
+
+    if user.is_superuser:
+        return Response({'message': f'Welcome, {user.username}!', 'role': 'admin'})
+    
+    profile = UserCreate.objects.get(user=user)
+    return Response({'message': f'Welcome, {profile.full_name}!', 'role': 'user'})
     
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def account_logout(request):
     logout(request)
-    return JsonResponse({'message': 'Logout successful.'}, status=200)
+    return Response({'message': 'Logout successful.'}, status=200)
 
 
 
+@api_view(['GET'])
+def get_seats(request):
+    """All Seat list + availability"""
+    date = request.query_params.get('date')  # ?date=2026-06-20
+
+    seats = Seat.objects.all()
+    data = []
+
+    for seat in seats:
+        is_available = True
+        if date:
+            is_available = not BookedSeat.objects.filter(
+                seat=seat,
+                arrival_date=date,
+                booking__status__in=['pending', 'confirmed']
+            ).exists()
+
+        data.append({
+            'id': seat.id,
+            'seat_number': seat.seat_number,
+            'is_available': is_available,
+        })
+
+    return Response(data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def booking(request):
-    return JsonResponse({'message': 'Booking endpoint - to be implemented.'}, status=200)
+    """
+    Request body:
+    {
+        "seat_ids": [1, 2, 3],
+        "arrival_date": "2026-06-20",
+        "amount": 500.00
+    }
+    """
+    seat_ids = request.data.get('seat_ids', [])
+    arrival_date = request.data.get('arrival_date')
+    amount = request.data.get('amount')
+
+    if not seat_ids or not arrival_date or not amount:
+        return Response(
+            {'error': 'seat_ids, arrival_date, amount required'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        with transaction.atomic():
+            # Seat availability check
+            for seat_id in seat_ids:
+                already_booked = BookedSeat.objects.filter(
+                    seat_id=seat_id,
+                    arrival_date=arrival_date,
+                    booking__status__in=['pending', 'confirmed']
+                ).exists()
+                if already_booked:
+                    seat = Seat.objects.get(id=seat_id)
+                    return Response(
+                        {'error': f'Seat {seat.seat_number} already booked for {arrival_date}'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            # Payment create
+            payment = Payment.objects.create(
+                user=request.user,
+                amount=amount,
+                payment_data={'method': 'online', 'seat_ids': seat_ids},
+                is_successful=True,
+                invoice_number=str(uuid.uuid4())[:12].upper()
+            )
+
+            # SeatBooking create
+            seat_booking = SeatBooking.objects.create(
+                user=request.user,
+                arrival_date=arrival_date,
+                payment=payment,
+                status='confirmed'
+            )
+
+            # BookedSeat create
+            booked_seats = []
+            for seat_id in seat_ids:
+                bs = BookedSeat.objects.create(
+                    booking=seat_booking,
+                    seat_id=seat_id,
+                    arrival_date=arrival_date
+                )
+                booked_seats.append(bs)
+
+            # WebSocket broadcast — সব client কে notify
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                "seats",
+                {
+                    "type": "seat.update",
+                    "data": {
+                        "event": "seat_booked",
+                        "seat_ids": seat_ids,
+                        "arrival_date": arrival_date,
+                        "booked_by": request.user.username,
+                    }
+                }
+            )
+
+            return Response({
+                'booking_id': seat_booking.id,
+                'status': seat_booking.status,
+                'ticket_checker': seat_booking.ticket_checker,
+                'invoice_number': payment.invoice_number,
+                'seats': [bs.seat.seat_number for bs in booked_seats],
+                'arrival_date': arrival_date,
+            }, status=status.HTTP_201_CREATED)
+
+    except Seat.DoesNotExist:
+        return Response({'error': 'Invalid seat_id'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def cancel_booking(request, booking_id):
+    """Booking cancel"""
+    try:
+        seat_booking = SeatBooking.objects.get(id=booking_id, user=request.user)
+
+        if seat_booking.status == 'cancelled':
+            return Response({'error': 'Already cancelled'}, status=status.HTTP_400_BAD_REQUEST)
+
+        seat_booking.status = 'cancelled'
+        seat_booking.save()
+
+        # Cancelled seat IDs
+        seat_ids = list(
+            seat_booking.booked_seats.values_list('seat_id', flat=True)
+        )
+
+        # WebSocket broadcast
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            "seats",
+            {
+                "type": "seat.update",
+                "data": {
+                    "event": "seat_cancelled",
+                    "seat_ids": seat_ids,
+                    "arrival_date": str(seat_booking.arrival_date),
+                }
+            }
+        )
+
+        return Response({'message': 'Booking cancelled', 'booking_id': booking_id})
+
+    except SeatBooking.DoesNotExist:
+        return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def my_bookings(request):
+    """Current user er সব booking"""
+    bookings = SeatBooking.objects.filter(user=request.user).order_by('-booking_date')
+    data = []
+    for b in bookings:
+        data.append({
+            'booking_id': b.id,
+            'status': b.status,
+            'arrival_date': b.arrival_date,
+            'ticket_checker': b.ticket_checker,
+            'invoice_number': b.payment.invoice_number,
+            'amount': b.payment.amount,
+            'seats': [bs.seat.seat_number for bs in b.booked_seats.all()],
+        })
+    return Response(data)
+
+
 
 

@@ -94,3 +94,12 @@ class OTP_generate(models.Model):
 
     def __str__(self):
         return f"OTP for {self.user.username} - {'Verified' if self.is_verified else 'Not Verified'}"
+    
+
+
+class Admin_User(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    full_name = models.CharField(max_length=100)
+
+    def __str__(self):
+        return self.full_name
