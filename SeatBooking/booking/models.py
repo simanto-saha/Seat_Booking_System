@@ -29,6 +29,7 @@ class Payment(models.Model):
 class Seat(models.Model):
     seat_number = models.CharField(max_length=10, unique=True)
     is_available = models.BooleanField(default=True)
+    seat_available_date = models.DateField(null=True, blank=True)
 
     def __str__(self):
         return f"Seat {self.seat_number}"
@@ -67,10 +68,11 @@ class SeatBooking(models.Model):
 class BookedSeat(models.Model):
     booking = models.ForeignKey(SeatBooking, on_delete=models.CASCADE, related_name='booked_seats')
     seat = models.ForeignKey(Seat, on_delete=models.CASCADE)
-    arrival_date = models.DateField()  # booking.arrival_date এর সাথে duplicate রাখা হলো query সহজ করার জন্য
-
+    arrival_date = models.DateField() 
     class Meta:
-        pass
+        constraints = [
+            models.UniqueConstraint(fields=['seat', 'arrival_date'], name='unique_seat_booking')
+        ]
 
     def __str__(self):
         return f"Seat {self.seat.seat_number} on {self.arrival_date} ({self.booking.status})"
