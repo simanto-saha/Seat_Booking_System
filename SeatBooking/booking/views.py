@@ -12,6 +12,9 @@ from datetime import timedelta
 from django.contrib.auth import authenticate, login, logout
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
+from .redis_locks import seat_lock, SeatLockError
+from contextlib import ExitStack
+
 
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -75,14 +78,14 @@ def create_account(request):
     
     from django.core.cache import cache
     
-    # OTP verified কিনা check
+    
     if not cache.get(f"reg_otp_verified_{email}"):
         return Response({'error': 'Email not verified. Please verify OTP first.'}, status=403)
 
     user = User.objects.create_user(username=nid, password=password, email=email)
     UserCreate.objects.create(user=user, full_name=full_name, nid=nid, phone_number=phone_number)
     
-    # verified flag মুছো
+    
     cache.delete(f"reg_otp_verified_{email}")
 
 
@@ -140,18 +143,18 @@ def send_registration_otp(request):
     if User.objects.filter(email=email).exists():
         return Response({'error': 'Email already exists.'}, status=400)
 
-    # Temp user দিয়ে OTP store করবো না, cache ব্যবহার করবো
+    
     from django.core.cache import cache
 
     cache_key = f"reg_otp_{email}"
     
-    # 1 মিনিট এর মধ্যে আবার চাইলে block
+    
     if cache.get(f"reg_otp_cooldown_{email}"):
         return Response({'error': 'Please wait before requesting another OTP.'}, status=429)
 
     otp_code = str(random.randint(100000, 999999))
     
-    # 5 মিনিট OTP রাখো, 1 মিনিট cooldown
+    
     cache.set(cache_key, otp_code, timeout=300)
     cache.set(f"reg_otp_cooldown_{email}", True, timeout=60)
 
@@ -188,7 +191,7 @@ def verify_registration_otp(request):
     if saved_otp != otp_code:
         return Response({'error': 'Invalid OTP code.'}, status=400)
 
-    # OTP সঠিক — delete করো এবং verified flag রাখো
+    
     cache.delete(f"reg_otp_{email}")
     cache.set(f"reg_otp_verified_{email}", True, timeout=600)  # 10 মিনিট সময় account বানাতে
 
@@ -282,17 +285,10 @@ def get_seats(request):
     return Response(data)
 
 
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def booking(request):
-    """
-    Request body:
-    {
-        "seat_ids": [1, 2, 3],
-        "arrival_date": "2026-06-20",
-        "amount": 500.00
-    }
-    """
     seat_ids = request.data.get('seat_ids', [])
     arrival_date = request.data.get('arrival_date')
     amount = request.data.get('amount')
@@ -303,77 +299,131 @@ def booking(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    
+    sorted_seat_ids = sorted(seat_ids)
+
     try:
-        with transaction.atomic():
-            # Seat availability check
-            for seat_id in seat_ids:
-                already_booked = BookedSeat.objects.filter(
-                    seat_id=seat_id,
-                    arrival_date=arrival_date,
-                    booking__status__in=['pending', 'confirmed']
-                ).exists()
-                if already_booked:
-                    seat = Seat.objects.get(id=seat_id)
-                    return Response(
-                        {'error': f'Seat {seat.seat_number} already booked for {arrival_date}'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
+        with ExitStack() as stack:
+            
+            for seat_id in sorted_seat_ids:
+                stack.enter_context(seat_lock(seat_id, arrival_date))
 
-            # Payment create
-            payment = Payment.objects.create(
-                user=request.user,
-                amount=amount,
-                payment_data={'method': 'online', 'seat_ids': seat_ids},
-                is_successful=True,
-                invoice_number=str(uuid.uuid4())[:12].upper()
-            )
+            with transaction.atomic():
+                for seat_id in seat_ids:
+                    already_booked = BookedSeat.objects.filter(
+                        seat_id=seat_id,
+                        arrival_date=arrival_date,
+                        booking__status__in=['pending', 'confirmed']
+                    ).exists()
+                    if already_booked:
+                        seat = Seat.objects.get(id=seat_id)
+                        return Response(
+                            {'error': f'Seat {seat.seat_number} already booked for {arrival_date}'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
 
-            # SeatBooking create
-            seat_booking = SeatBooking.objects.create(
-                user=request.user,
-                arrival_date=arrival_date,
-                payment=payment,
-                status='confirmed'
-            )
-
-            # BookedSeat create
-            booked_seats = []
-            for seat_id in seat_ids:
-                bs = BookedSeat.objects.create(
-                    booking=seat_booking,
-                    seat_id=seat_id,
-                    arrival_date=arrival_date
+                payment = Payment.objects.create(
+                    user=request.user,
+                    amount=amount,
+                    payment_data={'method': 'online', 'seat_ids': seat_ids},
+                    is_successful=True,
+                    invoice_number=str(uuid.uuid4())[:12].upper()
                 )
-                booked_seats.append(bs)
 
-            # WebSocket broadcast — সব client কে notify
+                seat_booking = SeatBooking.objects.create(
+                    user=request.user,
+                    arrival_date=arrival_date,
+                    payment=payment,
+                    status='confirmed'
+                )
+
+                booked_seats = []
+                for seat_id in seat_ids:
+                    bs = BookedSeat.objects.create(
+                        booking=seat_booking,
+                        seat_id=seat_id,
+                        arrival_date=arrival_date
+                    )
+                    booked_seats.append(bs)
+
+                channel_layer = get_channel_layer()
+                async_to_sync(channel_layer.group_send)(
+                    "seats",
+                    {
+                        "type": "seat.update",
+                        "data": {
+                            "event": "seat_booked",
+                            "seat_ids": seat_ids,
+                            "arrival_date": arrival_date,
+                            "booked_by": request.user.username,
+                        }
+                    }
+                )
+
+                return Response({
+                    'booking_id': seat_booking.id,
+                    'status': seat_booking.status,
+                    'ticket_checker': seat_booking.ticket_checker,
+                    'invoice_number': payment.invoice_number,
+                    'seats': [bs.seat.seat_number for bs in booked_seats],
+                    'arrival_date': arrival_date,
+                }, status=status.HTTP_201_CREATED)
+
+    except SeatLockError:
+        return Response(
+            {'error': 'Seat is currently being booked by someone else, try again.'},
+            status=status.HTTP_409_CONFLICT
+        )
+    except Seat.DoesNotExist:
+        return Response({'error': 'Invalid seat_id'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def cancel_booking(request, booking_id):
+    try:
+        seat_booking = SeatBooking.objects.get(id=booking_id, user=request.user)
+
+        if seat_booking.status == 'cancelled':
+            return Response({'error': 'Already cancelled'}, status=status.HTTP_400_BAD_REQUEST)
+
+        seat_ids = list(
+            seat_booking.booked_seats.values_list('seat_id', flat=True)
+        )
+        arrival_date = seat_booking.arrival_date
+        sorted_seat_ids = sorted(seat_ids)
+
+        with ExitStack() as stack:
+            for seat_id in sorted_seat_ids:
+                stack.enter_context(seat_lock(seat_id, arrival_date))
+
+            with transaction.atomic():
+                seat_booking.status = 'cancelled'
+                seat_booking.save()
+
             channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 "seats",
                 {
                     "type": "seat.update",
                     "data": {
-                        "event": "seat_booked",
+                        "event": "seat_cancelled",
                         "seat_ids": seat_ids,
-                        "arrival_date": arrival_date,
-                        "booked_by": request.user.username,
+                        "arrival_date": str(arrival_date),
                     }
                 }
             )
 
-            return Response({
-                'booking_id': seat_booking.id,
-                'status': seat_booking.status,
-                'ticket_checker': seat_booking.ticket_checker,
-                'invoice_number': payment.invoice_number,
-                'seats': [bs.seat.seat_number for bs in booked_seats],
-                'arrival_date': arrival_date,
-            }, status=status.HTTP_201_CREATED)
+        return Response({'message': 'Booking cancelled', 'booking_id': booking_id})
 
-    except Seat.DoesNotExist:
-        return Response({'error': 'Invalid seat_id'}, status=status.HTTP_404_NOT_FOUND)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    except SeatLockError:
+        return Response(
+            {'error': 'System busy, try again.'},
+            status=status.HTTP_409_CONFLICT
+        )
+    except SeatBooking.DoesNotExist:
+        return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
 @api_view(['POST'])

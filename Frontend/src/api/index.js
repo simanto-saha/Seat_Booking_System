@@ -1,6 +1,6 @@
 const BASE_URL = "http://localhost:8000/booking";
 
-// Cookie থেকে CSRF token নেওয়া
+
 function getCsrfToken() {
   const name = "csrftoken";
   const cookies = document.cookie.split(";");

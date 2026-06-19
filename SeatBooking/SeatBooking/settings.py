@@ -32,6 +32,7 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -137,13 +138,10 @@ USE_TZ = True
 STATIC_URL = 'static/'
 CORS_ALLOW_CREDENTIALS = True
 
-CSRF_TRUSTED_ORIGINS = [        # ← এটা যোগ করো
+CSRF_TRUSTED_ORIGINS = [        
     "http://localhost:5173",
 ]
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-]
 
 
 # Email settings
@@ -158,6 +156,12 @@ DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
 CACHES = {
     "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:6379/1",
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        }
     }
 }
+
+REDIS_LOCK_URL = "redis://127.0.0.1:6379/2"  
