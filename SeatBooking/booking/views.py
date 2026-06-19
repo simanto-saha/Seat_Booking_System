@@ -217,13 +217,12 @@ def home(request):
 
 @api_view(['POST'])
 def account_login(request):
-    identifier = request.data.get('identifier')  # email or nid
+    identifier = request.data.get('identifier')
     password = request.data.get('password')
 
     if not identifier or not password:
         return Response({'error': 'identifier and password required'}, status=400)
 
-    # Superuser login - email diye
     if '@' in identifier:
         try:
             user = User.objects.get(email=identifier)
@@ -231,7 +230,6 @@ def account_login(request):
         except User.DoesNotExist:
             return Response({'error': 'Invalid credentials'}, status=400)
     else:
-        # Normal user  - nid diye
         try:
             profile = UserCreate.objects.get(nid=identifier)
             username = profile.user.username
@@ -246,9 +244,12 @@ def account_login(request):
 
     if user.is_superuser:
         return Response({'message': f'Welcome, {user.username}!', 'role': 'admin'})
-    
-    profile = UserCreate.objects.get(user=user)
-    return Response({'message': f'Welcome, {profile.full_name}!', 'role': 'user'})
+
+    try:
+        profile = UserCreate.objects.get(user=user)
+        return Response({'message': f'Welcome, {profile.full_name}!', 'role': 'user'})
+    except UserCreate.DoesNotExist:
+        return Response({'error': 'User profile incomplete. Please contact support.'}, status=400)
     
 
 @api_view(['GET'])
