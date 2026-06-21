@@ -34,7 +34,7 @@ class MustChangePasswordPermission(permissions.BasePermission):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, MustChangePasswordPermission])
+@permission_classes([IsAuthenticated])
 def change_password(request):
     user = request.user
     old_password = request.data.get('old_password')
@@ -61,9 +61,16 @@ def change_password(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, MustChangePasswordPermission])
 def admin_dashboard(request):
-    if not request.user.is_admin:
+    try:
+        admin_profile = AdminProfile.objects.get(user=request.user)
+    except AdminProfile.DoesNotExist:
         return Response({"error": "You do not have permission to access this resource."}, status=403)
-    
+
+    return Response({
+        "message": f"Welcome, {request.user.username}!",
+        "designation": admin_profile.designation,
+        "must_change_password": admin_profile.must_change_password,
+    })
 
 
 

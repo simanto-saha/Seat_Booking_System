@@ -208,7 +208,17 @@ def home(request):
         return Response({'role': 'guest', 'message': 'Welcome, Guest!'})
 
     if user.is_superuser:
-        return Response({'role': 'admin', 'message': f'Welcome, {user.username}!'})
+        return Response({'role': 'superadmin', 'message': f'Welcome, {user.username}!'})
+
+    try:
+        admin_profile = AdminProfile.objects.get(user=user)
+        return Response({
+            'role': 'admin',
+            'message': f'Welcome, {user.username}!',
+            'must_change_password': admin_profile.must_change_password
+        })
+    except AdminProfile.DoesNotExist:
+        pass
 
     try:
         profile = UserCreate.objects.get(user=user)
@@ -244,11 +254,9 @@ def account_login(request):
 
     login(request, user)
 
-    # Superuser (Django admin)
     if user.is_superuser:
-        return Response({'message': f'Welcome, {user.username}!', 'role': 'admin'})
+        return Response({'message': f'Welcome, {user.username}!', 'role': 'superadmin'})
 
-    # Admin created via create_admin_user
     try:
         admin_profile = AdminProfile.objects.get(user=user)
         return Response({
@@ -259,7 +267,6 @@ def account_login(request):
     except AdminProfile.DoesNotExist:
         pass
 
-    # Normal user
     try:
         profile = UserCreate.objects.get(user=user)
         return Response({'message': f'Welcome, {profile.full_name}!', 'role': 'user'})

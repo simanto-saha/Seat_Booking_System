@@ -23,7 +23,14 @@ export default function Login() {
     try {
       const data = await loginApi(form);
       setUser(data);
-      navigate("/");
+
+      if (data.role === "superadmin") {
+        navigate("/superadmin");
+      } else if (data.role === "admin") {
+        navigate("/admin");
+      } else {
+        navigate("/");
+      }
     } catch (err) {
       setError(err.message);
     } finally {

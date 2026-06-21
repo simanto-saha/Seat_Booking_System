@@ -19,6 +19,9 @@ export default function Navbar() {
   const isGuest = !user || user.role === "guest";
   const userName = user?.message?.replace("Welcome, ", "").replace("!", "") ?? "";
 
+  const roleIcon =
+    user?.role === "superadmin" ? "🛡️" : user?.role === "admin" ? "👑" : "👤";
+
   return (
     <nav className="sticky top-0 z-50 bg-slate-900 border-b border-slate-800">
       <div className="max-w-5xl mx-auto px-4 h-14 flex items-center gap-6">
@@ -31,8 +34,17 @@ export default function Navbar() {
         {/* Nav links */}
         <div className="flex items-center gap-1 flex-1">
           <Link to="/" className={isActive("/")}>Seats</Link>
-          {!isGuest && (
+
+          {user?.role === "user" && (
             <Link to="/my-bookings" className={isActive("/my-bookings")}>My Bookings</Link>
+          )}
+
+          {user?.role === "admin" && (
+            <Link to="/admin" className={isActive("/admin")}>Admin Panel</Link>
+          )}
+
+          {user?.role === "superadmin" && (
+            <Link to="/superadmin" className={isActive("/superadmin")}>Super Admin</Link>
           )}
         </div>
 
@@ -53,7 +65,7 @@ export default function Navbar() {
           ) : (
             <>
               <span className="text-sm text-slate-400 max-w-[150px] truncate">
-                {user.role === "admin" ? "👑" : "👤"} {userName}
+                {roleIcon} {userName}
               </span>
               <button
                 onClick={handleLogout}

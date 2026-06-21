@@ -6,8 +6,9 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import ForgotPassword from "./pages/ForgotPassword";
 import MyBookings from "./pages/MyBookings";
+import SuperAdminDashboard from "./pages/SuperAdminDashboard";
+import AdminDashboard from "./pages/AdminDashboard";
 
-// Layout: Navbar + page content
 function Layout() {
   return (
     <div className="min-h-screen bg-slate-950">
@@ -17,7 +18,6 @@ function Layout() {
   );
 }
 
-// Redirect logged-in users away from auth pages
 function GuestOnly({ children }) {
   const { user, loading } = useAuth();
   if (loading) return null;
@@ -25,18 +25,32 @@ function GuestOnly({ children }) {
   return children;
 }
 
+function RequireSuperAdmin({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return null;
+  if (!user || user.role !== "superadmin") return <Navigate to="/login" replace />;
+  return children;
+}
+
+function RequireAdmin({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return null;
+  if (!user || user.role !== "admin") return <Navigate to="/login" replace />;
+  return children;
+}
+
 function AppRoutes() {
   return (
     <Routes>
-      {/* Pages WITH Navbar */}
       <Route element={<Layout />}>
         <Route path="/" element={<Home />} />
         <Route path="/my-bookings" element={<MyBookings />} />
+        <Route path="/superadmin" element={<RequireSuperAdmin><SuperAdminDashboard /></RequireSuperAdmin>} />
+        <Route path="/admin" element={<RequireAdmin><AdminDashboard /></RequireAdmin>} />
       </Route>
 
-      {/* Auth pages — NO Navbar */}
-      <Route path="/login"           element={<GuestOnly><Login /></GuestOnly>} />
-      <Route path="/register"        element={<GuestOnly><Register /></GuestOnly>} />
+      <Route path="/login" element={<GuestOnly><Login /></GuestOnly>} />
+      <Route path="/register" element={<GuestOnly><Register /></GuestOnly>} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
