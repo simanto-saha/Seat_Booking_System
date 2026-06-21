@@ -23,8 +23,9 @@ from rest_framework import status
 from django.db import transaction
 import uuid
 
-from .models import UserCreate, OTP_generate, SeatBooking, Seat, Payment, BookedSeat
+from .models import UserCreate, OTP_generate, SeatBooking, Payment, BookedSeat
 from SuperAdmin.models import AdminProfile
+from AdminUser.models import Seat
 
 
 def is_strong_password(password):
@@ -394,52 +395,6 @@ def booking(request):
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def cancel_booking(request, booking_id):
-    try:
-        seat_booking = SeatBooking.objects.get(id=booking_id, user=request.user)
-
-        if seat_booking.status == 'cancelled':
-            return Response({'error': 'Already cancelled'}, status=status.HTTP_400_BAD_REQUEST)
-
-        seat_ids = list(
-            seat_booking.booked_seats.values_list('seat_id', flat=True)
-        )
-        arrival_date = seat_booking.arrival_date
-        sorted_seat_ids = sorted(seat_ids)
-
-        with ExitStack() as stack:
-            for seat_id in sorted_seat_ids:
-                stack.enter_context(seat_lock(seat_id, arrival_date))
-
-            with transaction.atomic():
-                seat_booking.status = 'cancelled'
-                seat_booking.save()
-
-            channel_layer = get_channel_layer()
-            async_to_sync(channel_layer.group_send)(
-                "seats",
-                {
-                    "type": "seat.update",
-                    "data": {
-                        "event": "seat_cancelled",
-                        "seat_ids": seat_ids,
-                        "arrival_date": str(arrival_date),
-                    }
-                }
-            )
-
-        return Response({'message': 'Booking cancelled', 'booking_id': booking_id})
-
-    except SeatLockError:
-        return Response(
-            {'error': 'System busy, try again.'},
-            status=status.HTTP_409_CONFLICT
-        )
-    except SeatBooking.DoesNotExist:
-        return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
-
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -498,5 +453,27 @@ def my_bookings(request):
     return Response(data)
 
 
+# Searching seat availability for given date and distination
+@api_view(['GET'])
+def search_seats(request):
+    date = request.query_params.get('date')
+    distination = request.query_params.get('distination')
 
+    seats = Seat.objects.filter(date=date, distination=distination, seat_available=True)
+    
+    # train wise group kore dekhano better, jate user train select korte pare
+    trains = {}
+    for seat in seats:
+        key = seat.train_number
+        if key not in trains:
+            trains[key] = {
+                "train_number": seat.train_number,
+                "train_name": seat.train_name,
+                "arrival_time": seat.arrival_time,
+                "departure_time": seat.departure_time,
+                "distination": seat.distination,
+                "available_seats": 0
+            }
+        trains[key]["available_seats"] += 1
 
+    return Response(list(trains.values()))

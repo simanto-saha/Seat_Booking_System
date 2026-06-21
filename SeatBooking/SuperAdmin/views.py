@@ -13,6 +13,23 @@ from django.core.mail import send_mail
 from django.conf import settings
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def superadmin_dashboard(request):
+    if not request.user.is_superuser:
+        return Response({"error": "You do not have permission to access this resource."}, status=403)
+
+    total_admins = AdminProfile.objects.filter(is_admin=True).count()
+    total_users = User.objects.count()
+
+    return Response({
+        "total_admins": total_admins,
+        "total_users": total_users,
+    }, status=200)
+
+
+
+
 def generate_random_password(length=12):
     characters = string.ascii_letters + string.digits + "!@#$%^&*"
     # Eksure password e lowercase, uppercase, digit, special char thake

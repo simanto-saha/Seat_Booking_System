@@ -6,6 +6,11 @@ from rest_framework.response import Response
 from rest_framework import permissions
 
 from SuperAdmin.models import AdminProfile
+from booking.models import SeatBooking, BookedSeat
+from .models import Seat
+
+
+TOTAL_SEATS = 1020
 
 class MustChangePasswordPermission(permissions.BasePermission):
     """
@@ -51,3 +56,54 @@ def change_password(request):
         admin_profile.save()
 
     return Response({"success": "Password changed successfully."}, status=200)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, MustChangePasswordPermission])
+def admin_dashboard(request):
+    if not request.user.is_admin:
+        return Response({"error": "You do not have permission to access this resource."}, status=403)
+    
+
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, MustChangePasswordPermission])
+def create_seat(request):
+    date = request.data.get('date')
+    train_number = request.data.get('train_number')
+    train_name = request.data.get('train_name')
+    arrival_time = request.data.get('arrival_time')
+    departure_time = request.data.get('departure_time')
+    distination = request.data.get('distination')
+
+    if not date or not train_number:
+        return Response({"error": "date and train_number are required."}, status=400)
+
+    # already create hoye thakle duplicate prevent kora
+    if Seat.objects.filter(date=date, train_number=train_number).exists():
+        return Response(
+            {"error": f"Seats already created for train {train_number} on {date}."},
+            status=400
+        )
+
+    seats = [
+        Seat(
+            seat_number=str(i),
+            train_number=train_number,
+            train_name=train_name,
+            arrival_time=arrival_time,
+            departure_time=departure_time,
+            distination=distination,
+            seat_available=True,
+            date=date,
+        )
+        for i in range(1, TOTAL_SEATS + 1)
+    ]
+
+    Seat.objects.bulk_create(seats)
+
+    return Response(
+        {"success": f"{TOTAL_SEATS} seats created for {train_name} ({train_number}) on {date}."},
+        status=201
+    )

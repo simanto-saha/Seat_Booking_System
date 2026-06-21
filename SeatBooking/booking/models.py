@@ -2,6 +2,7 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.contrib.auth.hashers import make_password, check_password
 import random
+from AdminUser.models import Seat
 
 
 class UserCreate(models.Model):
@@ -26,13 +27,6 @@ class Payment(models.Model):
         return f"Payment of {self.amount} by {self.user.username} on {self.payment_date}"
 
 
-class Seat(models.Model):
-    seat_number = models.CharField(max_length=10, unique=True)
-    is_available = models.BooleanField(default=True)
-    seat_available_date = models.DateField(null=True, blank=True)
-
-    def __str__(self):
-        return f"Seat {self.seat_number}"
 
 
 class SeatBooking(models.Model):
@@ -96,10 +90,3 @@ class OTP_generate(models.Model):
         return f"OTP for {self.user.username} - {'Verified' if self.is_verified else 'Not Verified'}"
     
 
-
-class Admin_User(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
-    full_name = models.CharField(max_length=100)
-
-    def __str__(self):
-        return self.full_name
