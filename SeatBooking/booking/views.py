@@ -24,6 +24,7 @@ from django.db import transaction
 import uuid
 
 from .models import UserCreate, OTP_generate, SeatBooking, Seat, Payment, BookedSeat
+from SuperAdmin.models import AdminProfile
 
 
 def is_strong_password(password):
@@ -242,9 +243,22 @@ def account_login(request):
 
     login(request, user)
 
+    # Superuser (Django admin)
     if user.is_superuser:
         return Response({'message': f'Welcome, {user.username}!', 'role': 'admin'})
 
+    # Admin created via create_admin_user
+    try:
+        admin_profile = AdminProfile.objects.get(user=user)
+        return Response({
+            'message': f'Welcome, {user.username}!',
+            'role': 'admin',
+            'must_change_password': admin_profile.must_change_password
+        })
+    except AdminProfile.DoesNotExist:
+        pass
+
+    # Normal user
     try:
         profile = UserCreate.objects.get(user=user)
         return Response({'message': f'Welcome, {profile.full_name}!', 'role': 'user'})

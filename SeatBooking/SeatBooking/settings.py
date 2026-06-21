@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'channels',
     'corsheaders',
     'AdminUser',
+    'SuperAdmin',
 ]
 
 MIDDLEWARE = [
